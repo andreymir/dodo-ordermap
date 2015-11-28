@@ -1,0 +1,225 @@
+﻿<!DOCTYPE html>
+<html lang="ru">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<meta http-equiv="x-ua-compatible" content="ie=edge">
+
+	<title>Store Locator</title>
+	
+	<link href="https://cdn.rawgit.com/twbs/bootstrap/v4-dev/dist/css/bootstrap.css" rel="stylesheet" />
+	<link href="https://api.tiles.mapbox.com/mapbox.js/v2.2.3/mapbox.css" rel="stylesheet" />
+	
+	<style>
+		.pad2 {
+			padding:20px;
+		}
+		.quiet {
+			color:#888;
+		}
+		.map {
+			margin: 20px;
+			height: 800px;
+		}
+		.clearfix { display:block; }
+		.clearfix:after {
+			content:'.';
+			display:block;
+			height:0;
+			clear:both;
+			visibility:hidden;
+		}
+		
+		/* Marker tweaks */
+		.leaflet-popup-close-button {
+			display:none;
+		}
+		.leaflet-popup-content {
+			font:400 15px/22px 'Source Sans Pro', 'Helvetica Neue', Sans-serif;
+			padding:0;
+			width:200px;
+		}
+		.leaflet-popup-content-wrapper {
+			padding:0;
+		}
+		.leaflet-popup-content h3 {
+			background:#91c949;
+			color:#fff;
+			margin:0;
+			display:block;
+			padding:10px;
+			border-radius:3px 3px 0 0;
+			font-weight:700;
+			margin-top:-15px;
+		}
+		.leaflet-popup-content div {
+			padding:10px;
+		}
+		.leaflet-container .leaflet-marker-icon { cursor:pointer; }
+	</style>
+
+	<script src="https://code.jquery.com/jquery-2.1.4.js"></script>
+	<script src="https://cdn.rawgit.com/twbs/bootstrap/v4-dev/dist/js/bootstrap.js"></script>
+	<script src="https://api.tiles.mapbox.com/mapbox.js/v2.2.3/mapbox.js"></script>
+	<script src="https://cdn.jsdelivr.net/pubsubjs/1.4.2/pubsub.js"></script>
+</head>
+<body>
+	<div id="map"" class="map pad2">Map</div>
+	<script>
+		L.mapbox.accessToken = 'pk.eyJ1IjoiYW5kcmV5bWlyIiwiYSI6ImNpaGFxb2lvYjAwNXR2NGtsMXMwbDJsMmEifQ.BDVq27Qih1orxhAMuqNAjw';
+		var queue = [];
+		var map = L.mapbox.map('map', 'mapbox.light')
+			//.setView([38.909671288923, -77.034084142948], 13);
+
+		var listings = document.getElementById('listings');
+		var locations = L.mapbox.featureLayer().addTo(map);	
+		var departments;
+		
+		$.getJSON('departments.js')
+			.done(function(data) {
+				departments = data;
+				
+				for (var d in departments) {
+					if (!departments[d].location) {
+						continue;
+					}
+					
+					createMarker(departments[d]);
+				}
+				
+			});
+		
+		function createMarker(d) {
+			
+			var latLng = L.latLng(d.location.lat, d.location.lng);
+			
+			var marker = L.marker([d.location.lat, d.location.lng], {
+				icon: L.mapbox.marker.icon({
+					'marker-color': '#f86767'
+				})
+			})
+			.addTo(locations);
+			
+			var content = $('<div>').text(d.name);
+			var popup = L.popup({ offset: [0, -25] })
+				.setLatLng(latLng)
+        		.setContent(content[0]);
+				
+			d.marker = marker;
+			d.popup = popup;
+		}
+		
+		// create a function to subscribe to topics
+		var newOrderSubscriber = function(msg, data ) {
+			var dateOfReceipt = new Date(data.DateOfReceipt);
+			var displayDate = +dateOfReceipt - (3 * 60 * 60 * 1000) + 3 * 60 * 1000;
+			data.DisplayDate = displayDate;
+			console.log(msg, data);
+			queue.push(data);
+		};
+		
+		setInterval(function() {
+			var now = + (new Date());
+			
+			if (queue.length == 0 || queue[0].DisplayDate > now) {
+				return;
+			}
+			
+			var data = queue.shift();
+			
+			var department = departments[data.DepartmentName];
+			
+			if (!department || !department.marker) {
+				return;
+			}
+			
+			var s = [];
+			for (var i = 0; i < data.Composition.length; i++) {
+				s.push(data.Composition[i].ProductName);
+			}
+			
+			var c = $('<div>')
+				.text(data.DepartmentName)
+				.append($('<div>').text(data.ClientName))
+				.append($('<div>').text(data.TotalPrice.toFixed(2) + ' руб.'))
+				//.append($('<div>').text(data.DateOfReceipt))
+				.append($('<div>').text(s.join(', ')));
+			department.popup.setContent(c[0]);
+			department.popup.addTo(locations);
+			setTimeout(function() {
+				locations.removeLayer(department.popup);
+			}, 3000);
+			
+		}, 300);
+
+		// add the function to the list of subscribers for a particular topic
+		// we're keeping the returned token, in order to be able to unsubscribe
+		// from the topic later on
+		var token = PubSub.subscribe('NEW_ORDER', newOrderSubscriber);
+		
+		var params = {
+			numberOfOrders: 1,
+			key: '76F41E78-E02A-43E3-918A-FCA5E915A139',
+			lastOrderId: 1
+		};
+		var min, max;
+		
+		$.getJSON('https://backoffice.dodopizza.ru/api/v1/milliard?callback=?', params)
+			.done(function(result) {
+				min = result[0].Id;
+				max = min + 100000;
+				console.log('start', min, max);
+				lookupLastOrderId();
+			});
+		
+		function lookupLastOrderId() {
+			if (max == min) {
+				params.lastOrderId = min - 60;
+				params.numberOfOrders = 1000;
+				console.log('finish', min);
+				startCollectingOrders();
+				return;
+			}
+			params.lastOrderId = Math.floor((max - min) / 2) + min;
+			$.getJSON('https://backoffice.dodopizza.ru/api/v1/milliard?callback=?', params)
+				.done(function(result) {
+					
+					console.log(min, max, result);
+					
+					if (result.length == 0) {
+						max = params.lastOrderId - 1;
+					} else {
+						min = result[0].Id;
+					}
+					
+					if (min > max) {
+						max = min;
+					}
+					
+					lookupLastOrderId();
+				});
+		}
+		
+		function startCollectingOrders() {
+			$.getJSON('https://backoffice.dodopizza.ru/api/v1/milliard?callback=?', params)
+				.done(function(result) {
+					
+					if (result.length == 0) {
+						//params.numberOfOrders = Math.floor(Math.random() * 1000) + 1000;
+						setTimeout(startCollectingOrders, 10000);
+						return;
+					}
+					
+					params.lastOrderId = result[result.length -1].Id;
+					
+					for (var i = 0, imax = result.length; i < imax; i++) {
+						PubSub.publish( 'NEW_ORDER', result[i]);
+					}
+					
+					setTimeout(startCollectingOrders, 10000);
+				});
+		}
+		
+	</script>
+</body>
+</html>
